@@ -36,6 +36,7 @@ jobs:
           positive = re.compile(r'no (?:prior |previous |relevant )?experience (?:is )?(?:required|necessary|needed)|no experience|full training|training (?:is |will be )?provided|entry.level|first job', re.I)
           required = re.compile(r'(?:minimum|at least|must have|require[ds]?)\s+(?:of\s+)?[1-9]\d*\+?\s*(?:years?|yrs?)|[1-9]\d*\+?\s*(?:years?|yrs?)[^.!\n]{0,50}(?:essential|required|must)', re.I)
           senior = re.compile(r'\b(manager|supervisor|senior|team leader|head chef)\b', re.I)
+          relevant = re.compile(r'all[ -]?rounder|retail.*(?:assistant|team member|sales|customer)|sales (?:assistant|associate|advisor|professional)|salesperson|store (?:team member|person|support)|customer (?:assistant|service.*(?:member|assistant))|barista|cafe|café|front of house|foh|food.*beverage.*attendant|hospitality.*(?:attendant|rounder)|crew member|christmas casual|holiday.*(?:sales|casual)|cleaning.*trolley|dispenser|beauty advisor', re.I)
           def clean(value):
               return '' if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)) else str(value)
           for keyword in keywords:
@@ -51,7 +52,7 @@ jobs:
                           title, desc = clean(raw.get('title')), clean(raw.get('description'))
                           url = clean(raw.get('job_url'))
                           key = url or (title.lower(), clean(raw.get('company')).lower())
-                          if key in seen or senior.search(title):
+                          if key in seen or senior.search(title) or not relevant.search(title):
                               continue
                           seen.add(key)
                           text = title + '\n' + desc
