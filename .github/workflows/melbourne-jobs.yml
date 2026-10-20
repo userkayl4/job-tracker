@@ -1,0 +1,115 @@
+name: Melbourne Entry Level Jobs
+on:
+  schedule:
+    - cron: '23 22 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: melbourne-job-search
+  cancel-in-progress: false
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Australia/Melbourne
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install JobSpy
+        run: python -m pip install 'python-jobspy>=1.1.80,<2'
+      - name: Search Melbourne retail and all-rounder jobs
+        run: |
+          mkdir -p results
+          python - <<'PY'
+          import csv, json, os, re, time
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          from jobspy import scrape_jobs
+          import pandas as pd
+
+          keywords = ['retail assistant', 'retail no experience', 'all rounder', 'cafe all rounder']
+          jobs, seen, diagnostics = [], set(), []
+          positive = re.compile(r'no (?:prior |previous |relevant )?experience (?:is )?(?:required|necessary|needed)|no experience|full training|training (?:is |will be )?provided|entry.level|first job', re.I)
+          required = re.compile(r'(?:minimum|at least|must have|require[ds]?)\s+(?:of\s+)?[1-9]\d*\+?\s*(?:years?|yrs?)|[1-9]\d*\+?\s*(?:years?|yrs?)[^.!\n]{0,50}(?:essential|required|must)', re.I)
+          senior = re.compile(r'\b(manager|supervisor|senior|team leader|head chef)\b', re.I)
+          def clean(value):
+              return '' if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)) else str(value)
+          for keyword in keywords:
+              for site in ['indeed', 'linkedin']:
+                  try:
+                      frame = scrape_jobs(site_name=[site], search_term=keyword,
+                          location='Melbourne, VIC, Australia', distance=25,
+                          country_indeed='Australia', results_wanted=20, hours_old=168,
+                          linkedin_fetch_description=True, verbose=0)
+                      records = frame.to_dict(orient='records') if frame is not None else []
+                      diagnostics.append(f'{site} / {keyword}: {len(records)} results')
+                      for raw in records:
+                          title, desc = clean(raw.get('title')), clean(raw.get('description'))
+                          url = clean(raw.get('job_url'))
+                          key = url or (title.lower(), clean(raw.get('company')).lower())
+                          if key in seen or senior.search(title):
+                              continue
+                          seen.add(key)
+                          text = title + '\n' + desc
+                          if required.search(text):
+                              status = 'Experience required / check advert'
+                          elif positive.search(text):
+                              status = 'No experience / training mentioned'
+                          else:
+                              status = 'Experience requirement unconfirmed'
+                          jobs.append(dict(title=title, company=clean(raw.get('company')),
+                              location=clean(raw.get('location')), experience=status,
+                              posted=clean(raw.get('date_posted')), source=site, url=url,
+                              description=desc))
+                  except Exception as exc:
+                      diagnostics.append(f'{site} / {keyword}: ERROR {type(exc).__name__}: {exc}')
+                  time.sleep(4)
+          jobs.sort(key=lambda j: ({'No experience / training mentioned': 0,
+              'Experience requirement unconfirmed': 1,
+              'Experience required / check advert': 2}[j['experience']], j['title']))
+          today = datetime.now(ZoneInfo('Australia/Melbourne')).strftime('%Y-%m-%d')
+          out = Path('results')
+          (out / 'jobs.json').write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+          fields = ['title','company','location','experience','posted','source','url']
+          with (out / 'jobs.csv').open('w', newline='', encoding='utf-8-sig') as f:
+              writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+              writer.writeheader()
+              writer.writerows(jobs)
+          def cell(value):
+              return str(value).replace('|','/').replace('\n',' ')
+          lines = [f'# Melbourne retail & all-rounder jobs - {today}', '',
+              'Location: Melbourne within 25 miles; posted in the past 7 days.',
+              'No resume needed. Experience labels use advert keywords, not verified eligibility.',
+              'Review requirements, location, pay and any RSA certificate requirement before applying.',
+              'Jobs requiring experience are separated below; unconfirmed jobs are not guaranteed beginner-friendly.', '',
+              f'Found {len(jobs)} unique non-management postings.', '']
+          for status in ['No experience / training mentioned', 'Experience requirement unconfirmed', 'Experience required / check advert']:
+              lines += [f'## {status}', '', '| Title | Company | Location | Posted | Apply |', '|---|---|---|---|---|']
+              for j in jobs:
+                  if j['experience'] == status:
+                      lines.append('| ' + ' | '.join(cell(j[k]) for k in ['title','company','location','posted']) + ' | ' + cell(j['url']) + ' |')
+              lines.append('')
+          lines += ['## Search diagnostics', ''] + ['- ' + d for d in diagnostics]
+          if not jobs:
+              lines += ['', 'No jobs returned. This may mean site blocking or no matching listings; it does not prove no vacancies exist.']
+          report = '\n'.join(lines) + '\n'
+          (out / f'Melbourne Jobs - {today}.md').write_text(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write(report)
+          print('\n'.join(diagnostics))
+          print(f'Saved {len(jobs)} jobs')
+          if not jobs:
+              raise SystemExit('No usable jobs returned; inspect diagnostics and retry later.')
+          PY
+      - name: Downloadable job list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melbourne-jobs-${{ github.run_number }}
+          path: results/
+          retention-days: 30
+          if-no-files-found: warn
